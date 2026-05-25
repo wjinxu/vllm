@@ -232,10 +232,22 @@ class MiniCPMOProcessingInfo(MiniCPMVProcessingInfo):
 
         from vllm.transformers_utils.processors.minicpmo import MiniCPMOProcessor
 
+        # MiniCPM-o 2.6 exposes the audio extractor as `feature_extractor`,
+        # but 4.5 renamed it to `audio_processor`.  Accept either.
+        feature_extractor = getattr(
+            hf_processor, "feature_extractor",
+            getattr(hf_processor, "audio_processor", None),
+        )
+        if feature_extractor is None:
+            raise AttributeError(
+                f"{type(hf_processor).__name__} has neither "
+                f"'feature_extractor' nor 'audio_processor' attribute"
+            )
+
         # Create vendored processor with correct configuration
         vendored_processor = MiniCPMOProcessor(
             image_processor=hf_processor.image_processor,
-            feature_extractor=hf_processor.feature_extractor,
+            feature_extractor=feature_extractor,
             tokenizer=hf_processor.tokenizer,
             pool_step=self.get_default_audio_pool_step(),
         )
