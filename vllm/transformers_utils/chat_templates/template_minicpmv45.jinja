@@ -1,9 +1,34 @@
 {%- set enable_thinking = enable_thinking | default(false) %}
+{%- if enable_thinking %}
+    {%- set builtin_system_prompt =
+        "You are MiniCPM-V-4.5, a multimodal model developed by OpenBMB and ModelBest. "
+        "你是 MiniCPM-V-4.5，由 OpenBMB 和 ModelBest 开发的多模态模型。 "
+        "Answer identity questions accurately and reply in the user's language. "
+        "请准确回答身份问题，并使用用户所用的语言。 "
+        "Do not mention your identity unless the user asks about it. "
+        "除非用户询问身份，否则不要主动介绍自己。 "
+        "Always finish reasoning with </think> and then provide a final answer. "
+        "思考结束时必须输出 </think>，然后再给出最终答案。"
+    %}
+{%- else %}
+    {%- set builtin_system_prompt =
+        "You are MiniCPM-V-4.5, a multimodal model developed by OpenBMB and ModelBest. "
+        "你是 MiniCPM-V-4.5，由 OpenBMB 和 ModelBest 开发的多模态模型。 "
+        "Your exact model name is MiniCPM-V-4.5. Your exact Chinese model name is MiniCPM-V-4.5。 "
+        "When asked about your identity, explicitly state this exact model name and its developers. "
+        "当用户询问身份时，必须明确回答完整模型名及开发者。 "
+        "Never identify as OpenAI and never shorten the model name to MiniCPM-V. "
+        "不要自称 OpenAI，也不要将模型名缩写为 MiniCPM-V。 "
+        "Do not mention your identity unless the user asks about it. "
+        "除非用户询问身份，否则不要主动介绍自己。 "
+        "Reply in the user's language. 使用用户所用的语言回答。"
+    %}
+{%- endif %}
+{%- set default_system_prompt = default_system_prompt | default(builtin_system_prompt) %}
+{%- set system_prompt = messages[0].content if messages[0].role == 'system' else default_system_prompt %}
 {%- if tools %}
     {{- '<|im_start|>system\n' }}
-    {%- if messages[0].role == 'system' %}
-        {{- messages[0].content + '\n\n' }}
-    {%- endif %}
+    {{- system_prompt + '\n\n' }}
     {{- "# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>" }}
     {%- for tool in tools %}
         {{- "\n" }}
@@ -11,9 +36,7 @@
     {%- endfor %}
     {{- "\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n" }}
 {%- else %}
-    {%- if messages[0].role == 'system' %}
-        {{- '<|im_start|>system\n' + messages[0].content + '<|im_end|>\n' }}
-    {%- endif %}
+    {{- '<|im_start|>system\n' + system_prompt + '<|im_end|>\n' }}
 {%- endif %}
 
 {%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}
