@@ -915,6 +915,51 @@ class VideoBackend(
         )
 
 
+@VIDEO_LOADER_REGISTRY.register(
+    "minicpmv",
+    video_processor="MiniCPMV4_6VideoProcessor",
+)
+class MiniCPMVVideoBackend(VideoBackend):
+    DEFAULT_FPS = 1.0
+    MAX_FRAMES = 60
+
+    @classmethod
+    def compute_frames_index_to_sample(
+        cls,
+        source: VideoSourceMetadata,
+        target: VideoTargetMetadata,
+        **kwargs,
+    ) -> list[int]:
+        total_frames = source.total_frames_num
+        if total_frames <= 0:
+            return []
+
+        if target.fps > 0 and source.original_fps > 0:
+            frame_interval = source.original_fps / target.fps
+            candidate_indices = np.arange(0, total_frames, frame_interval)
+            candidate_indices = np.rint(candidate_indices).astype(int)
+            candidate_indices = np.unique(
+                np.clip(candidate_indices, 0, total_frames - 1)
+            )
+        else:
+            candidate_indices = np.arange(total_frames)
+
+        max_frames = cls.MAX_FRAMES
+        if target.num_frames > 0:
+            max_frames = min(max_frames, target.num_frames)
+
+        if len(candidate_indices) <= max_frames:
+            return candidate_indices.tolist()
+
+        sampled_positions = np.linspace(
+            0,
+            len(candidate_indices) - 1,
+            max_frames,
+            dtype=int,
+        )
+        return candidate_indices[sampled_positions].tolist()
+
+
 @VIDEO_LOADER_REGISTRY.register(PYNVVIDEOCODEC_VIDEO_BACKEND, requires_gpu=True)
 class PyNvVideoCodecVideoBackend(VideoBackend):
     """Hardware-accelerated video backend using PyNvVideoCodec.

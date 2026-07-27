@@ -602,6 +602,21 @@ class MambaModelConfig(VerifyAndUpdateConfig):
                 cache_config.mamba_block_size = model_config.max_model_len
 
 
+class MiniCPMVModelConfig(VerifyAndUpdateConfig):
+    VIDEO_BACKEND = "minicpmv"
+    DEFAULT_VIDEO_FPS = 1.0
+    MAX_VIDEO_FRAMES = 60
+
+    @classmethod
+    def verify_and_update_model_config(cls, model_config: "ModelConfig") -> None:
+        mm_config = model_config.multimodal_config
+        if mm_config is not None:
+            video_kwargs = mm_config.media_io_kwargs.setdefault("video", {})
+            video_kwargs.setdefault("video_backend", cls.VIDEO_BACKEND)
+            video_kwargs.setdefault("fps", cls.DEFAULT_VIDEO_FPS)
+            video_kwargs.setdefault("num_frames", cls.MAX_VIDEO_FRAMES)
+
+
 class NemotronHForCausalLMConfig(VerifyAndUpdateConfig):
     DEFAULT_MAMBA_SSM_CACHE_DTYPE = "float32"
     """Only `float32` is known to have no accuracy issues by default."""
@@ -834,6 +849,8 @@ MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {
     "LlamaNemotronVLModel": LlamaNemotronVLConfig,
     "Mamba2ForCausalLM": MambaModelConfig,
     "MambaForCausalLM": MambaModelConfig,
+    "MiniCPMV": MiniCPMVModelConfig,
+    "MiniCPMV4_6ForConditionalGeneration": MiniCPMVModelConfig,
     "NemotronHForCausalLM": NemotronHForCausalLMConfig,
     "NemotronHPuzzleForCausalLM": NemotronHForCausalLMConfig,
     "NemotronH_Nano_VL_V2": NemotronHNanoVLV2Config,
