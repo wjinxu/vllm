@@ -13,6 +13,7 @@ from vllm.model_executor.models.config import (
     MiniCPMVModelConfig,
 )
 from vllm.model_executor.models.minicpmv import MiniCPMVProcessingInfo
+from vllm.model_executor.models.minicpmv4_6 import MiniCPMV4_6ProcessingInfo
 from vllm.multimodal.video import (
     MiniCPMVVideoBackend,
     VideoSourceMetadata,
@@ -112,3 +113,16 @@ def test_minicpmv_profile_caps_each_video_at_60_frames():
     )
 
     assert num_frames == 60
+
+
+def test_minicpmv4_6_disables_slicing_for_video_frames():
+    info = MagicMock(spec=MiniCPMV4_6ProcessingInfo)
+    info.get_hf_config.return_value = SimpleNamespace(
+        slice_config=SimpleNamespace(max_slice_nums=9)
+    )
+
+    image_max_slices = MiniCPMV4_6ProcessingInfo.get_image_max_slice_num(info)
+    video_max_slices = MiniCPMV4_6ProcessingInfo.get_video_max_slice_num(info)
+
+    assert image_max_slices == 9
+    assert video_max_slices == 1

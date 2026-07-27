@@ -463,17 +463,9 @@ class MiniCPMV4_6ProcessingInfo(MiniCPMVProcessingInfo):
         return getattr(config, "max_slice_nums", 9)
 
     def get_video_max_slice_num(self) -> int:
-        # Override the base class default of 1: transformers v5.7+
-        # `MiniCPMV4_6VideoProcessor` keeps the same max_slice_nums (default 9)
-        # as the image processor so that high-res frames get sliced.
-        try:
-            hf_processor = self.get_hf_processor()
-            video_processor = getattr(hf_processor, "video_processor", None)
-            if video_processor is not None:
-                return int(getattr(video_processor, "max_slice_nums", 9))
-        except Exception:
-            pass
-        return self.get_image_max_slice_num()
+        # Video frames use the source image only. Unlike standalone images,
+        # they must not be split into high-resolution slices.
+        return 1
 
     def _get_downsample_mode(
         self,
