@@ -483,6 +483,10 @@ _MULTIMODAL_MODELS = {
         "minicpmv4_6",
         "MiniCPMV4_6ForConditionalGeneration",
     ),
+    "MiniCPMV4_7ForConditionalGeneration": (
+        "minicpmv4_7",
+        "MiniCPMV4_7ForConditionalGeneration",
+    ),
     "Mistral3ForConditionalGeneration": (
         "mistral3",
         "Mistral3ForConditionalGeneration",
@@ -1170,6 +1174,11 @@ class _ModelRegistry:
         architecture: str,
         model_config: ModelConfig,
     ) -> str:
+        if architecture == "MiniCPMV":
+            version = str(getattr(model_config.hf_config, "version", ""))
+            if version == "4.7":
+                return "MiniCPMV4_7ForConditionalGeneration"
+
         if architecture in self.models:
             return architecture
 

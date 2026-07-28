@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import os
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
@@ -139,6 +140,35 @@ async def init_generate_state(
         if "generate" in supported_tasks
         else None
     )
+    state.ocr_pipeline = None
+    cli_layout_model = getattr(args, "ocr_layout_model", None)
+    layout_model = cli_layout_model or os.getenv("OCR_LAYOUT_MODEL")
+    if layout_model and state.openai_serving_chat_batch is not None:
+        from vllm.entrypoints.openai.chat_completion.ocr_pipeline import (
+            OCRPipelineServing,
+        )
+
+        if cli_layout_model:
+            layout_device = args.ocr_layout_device
+            max_crops = args.ocr_max_crops
+            max_tokens = args.ocr_max_tokens
+            max_slice_nums = args.ocr_max_slice_nums
+            max_pdf_pages = args.ocr_max_pdf_pages
+        else:
+            layout_device = os.getenv("OCR_LAYOUT_DEVICE", "cpu")
+            max_crops = int(os.getenv("OCR_MAX_CROPS", "0"))
+            max_tokens = int(os.getenv("OCR_MAX_TOKENS", "8192"))
+            max_slice_nums = int(os.getenv("OCR_MAX_SLICE_NUMS", "9"))
+            max_pdf_pages = int(os.getenv("OCR_MAX_PDF_PAGES", "0"))
+        state.ocr_pipeline = OCRPipelineServing(
+            batch_serving=state.openai_serving_chat_batch,
+            layout_model=layout_model,
+            layout_device=layout_device,
+            max_crops=max_crops,
+            max_tokens=max_tokens,
+            max_slice_nums=max_slice_nums,
+            max_pdf_pages=max_pdf_pages,
+        )
     if state.openai_serving_chat is not None:
         state.openai_serving_chat.warmup()
     state.openai_serving_completion = (

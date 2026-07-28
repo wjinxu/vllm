@@ -851,6 +851,7 @@ MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {
     "MambaForCausalLM": MambaModelConfig,
     "MiniCPMV": MiniCPMVModelConfig,
     "MiniCPMV4_6ForConditionalGeneration": MiniCPMVModelConfig,
+    "MiniCPMV4_7ForConditionalGeneration": MiniCPMVModelConfig,
     "NemotronHForCausalLM": NemotronHForCausalLMConfig,
     "NemotronHPuzzleForCausalLM": NemotronHForCausalLMConfig,
     "NemotronH_Nano_VL_V2": NemotronHNanoVLV2Config,

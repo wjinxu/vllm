@@ -149,6 +149,18 @@ class BaseFrontendArgs:
     """If set to False, output deltas will not be logged. Relevant only if 
     --enable-log-outputs is set.
     """
+    ocr_layout_model: str | None = None
+    """Enable the OCR document pipeline with this PP-DocLayoutV3 model path."""
+    ocr_layout_device: str = "cpu"
+    """Device used by PP-DocLayoutV3."""
+    ocr_max_crops: int = 0
+    """Maximum layout regions per page; 0 keeps all detected regions."""
+    ocr_max_tokens: int = 8192
+    """Maximum completion tokens requested for each OCR region."""
+    ocr_max_slice_nums: int = 9
+    """Maximum image slices used by the OCR model for each layout region."""
+    ocr_max_pdf_pages: int = 0
+    """Maximum PDF pages per OCR request; 0 keeps all pages."""
     log_error_stack: bool = envs.VLLM_SERVER_DEV_MODE
     """If set to True, log the stack trace of error responses"""
     tokens_only: bool = False

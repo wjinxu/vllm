@@ -1256,6 +1256,7 @@ setup(
             "soxr",
             "mistral_common[audio]",
         ],  # Required for audio processing
+        "ocr": ["PyMuPDF"],
         "video": [],  # Kept for backwards compatibility
         "flashinfer": [],  # Kept for backwards compatibility
         # Optional deps for Helion kernel development

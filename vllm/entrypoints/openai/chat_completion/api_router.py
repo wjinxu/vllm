@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-
 from http import HTTPStatus
 
 from fastapi import APIRouter, Depends, FastAPI, Request
@@ -37,6 +36,10 @@ def batch_chat(request: Request) -> OpenAIServingChatBatch | None:
     return request.app.state.openai_serving_chat_batch
 
 
+def ocr_pipeline(request: Request):
+    return getattr(request.app.state, "ocr_pipeline", None)
+
+
 @router.post(
     "/v1/chat/completions",
     dependencies=[Depends(validate_json_request)],
@@ -58,7 +61,11 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     if handler is None:
         raise NotImplementedError("The model does not support Chat Completions API")
 
-    generator = await handler.create_chat_completion(request, raw_request)
+    ocr_handler = ocr_pipeline(raw_request)
+    if ocr_handler is not None and ocr_handler.can_handle(request):
+        generator = await ocr_handler.create_chat_completion(request, raw_request)
+    else:
+        generator = await handler.create_chat_completion(request, raw_request)
 
     if isinstance(generator, ErrorResponse):
         return JSONResponse(
