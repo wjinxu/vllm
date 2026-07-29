@@ -68,6 +68,10 @@ class CPUAttentionBackend(AttentionBackend):
         return True
 
     @classmethod
+    def supports_sliding_window(cls) -> bool:
+        return True
+
+    @classmethod
     def supports_attn_type(cls, attn_type: str) -> bool:
         """CPU attention supports decoder,
         encoder-only and encoder-decoder attention."""
@@ -151,12 +155,12 @@ class CPUAttentionMetadataBuilder(AttentionMetadataBuilder[CPUAttentionMetadata]
         if self.window_size is None:
             self.window_size = -1
         self.block_size = vllm_config.cache_config.block_size
-        kv_cache_dtype_str = vllm_config.cache_config.cache_dtype
+        self.kv_cache_dtype = vllm_config.cache_config.cache_dtype
         self.isa = _get_attn_isa(
             self.dtype,
             self.block_size,
             self.head_dim,
-            kv_cache_dtype_str,
+            self.kv_cache_dtype,
         )
         self.is_cross_attention = isinstance(kv_cache_spec, CrossAttentionSpec)
         self.is_encoder_only_attention = isinstance(
@@ -230,6 +234,7 @@ class CPUAttentionMetadataBuilder(AttentionMetadataBuilder[CPUAttentionMetadata]
             isa=self.isa,
             enable_kv_split=envs.VLLM_CPU_ATTN_SPLIT_KV,
             dynamic_causal=dynamic_casual,
+            kv_cache_dtype=self.kv_cache_dtype,
         )
 
         attn_metadata = CPUAttentionMetadata(
