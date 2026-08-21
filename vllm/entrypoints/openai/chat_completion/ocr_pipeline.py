@@ -14,6 +14,10 @@ from typing import Any
 import torch
 from PIL import Image
 
+from vllm.entrypoints.openai.chat_completion.layout_postprocess import (
+    apply_layout_postprocess,
+)
+
 from vllm.entrypoints.openai.chat_completion.batch_serving import (
     OpenAIServingChatBatch,
 )
@@ -124,17 +128,25 @@ class PPDocLayoutService:
         result = self._processor.post_process_object_detection(
             outputs, target_sizes=[image.size[::-1]]
         )[0]
+        # NMS + nested-box dedup + oversized-image filter; without it,
+        # sub-boxes nested inside paragraph boxes get OCR'd twice.
+        detections = apply_layout_postprocess(
+            raw_results=[result],
+            id2label={int(k): v for k, v in self._model.config.id2label.items()},
+            img_sizes=[image.size],
+            layout_nms=True,
+            layout_unclip_ratio=None,
+            layout_merge_bboxes_mode="large",
+        )[0]
 
         blocks: list[OCRBlock] = []
-        for idx, (label_tensor, box_tensor) in enumerate(
-            zip(result["labels"], result["boxes"])
-        ):
+        for idx, detection in enumerate(detections):
             if self.max_crops > 0 and len(blocks) >= self.max_crops:
                 logger.warning("Truncated OCR layout to %d blocks", self.max_crops)
                 break
-            raw_label = self._model.config.id2label[int(label_tensor.item())]
+            raw_label = detection["label"]
             label = _LABEL_MAP.get(raw_label, raw_label)
-            box = [float(value) for value in box_tensor.tolist()]
+            box = [float(value) for value in detection["coordinate"]]
             x1 = max(0, min(image.width - 1, int(round(box[0]))))
             y1 = max(0, min(image.height - 1, int(round(box[1]))))
             x2 = max(x1 + 1, min(image.width, int(round(box[2]))))
