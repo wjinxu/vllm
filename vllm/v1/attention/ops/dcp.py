@@ -107,9 +107,10 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
         outputs_stride_b: int
         outputs_stride_h: int
         outputs_stride_d: int
-        new_output_stride_b: int
-        new_output_stride_h: int
-        new_output_stride_d: int
+        # Corrected output may use a different physical layout from the input.
+        corrected_output_stride_b: int
+        corrected_output_stride_h: int
+        corrected_output_stride_d: int
         lses_stride_n: int
         lses_stride_b: int
         lses_stride_h: int
@@ -122,15 +123,15 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
     @triton.jit
     def kernel(
         outputs_ptr,
-        new_output_ptr,
+        corrected_output_ptr,
         lses_ptr,
         vlse_ptr,
         outputs_stride_B,
         outputs_stride_H,
         outputs_stride_D,
-        new_output_stride_B,
-        new_output_stride_H,
-        new_output_stride_D,
+        corrected_output_stride_B,
+        corrected_output_stride_H,
+        corrected_output_stride_D,
         lses_stride_N,
         lses_stride_B,
         lses_stride_H,
@@ -149,7 +150,7 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
                 Pointer to input tensor of shape [ B, H, D ]
             lses_ptr (triton.PointerType):
                 Pointer to input tensor of shape [ N, B, H ]
-            new_output_ptr (triton.PointerType):
+            corrected_output_ptr (triton.PointerType):
                 Pointer to output tensor of shape [ B, H, D ]
             vlse_ptr (triton.PointerType):
                 Pointer to output tensor of shape [ B, H ]
@@ -210,12 +211,12 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
         output = output * factor
         output = tl.where(factor == 0.0, 0.0, output)
 
-        new_output_offsets = (
-            batch_idx * new_output_stride_B
-            + head_idx * new_output_stride_H
-            + d_offsets * new_output_stride_D
+        corrected_output_offsets = (
+            batch_idx * corrected_output_stride_B
+            + head_idx * corrected_output_stride_H
+            + d_offsets * corrected_output_stride_D
         )
-        tl.store(new_output_ptr + new_output_offsets, output)
+        tl.store(corrected_output_ptr + corrected_output_offsets, output)
 
     def dispatch(  # type: ignore[override]
         self,
@@ -246,13 +247,13 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
             outputs_stride_b=triton_scalar_specialization_rep(outputs_stride_b),
             outputs_stride_h=triton_scalar_specialization_rep(outputs_stride_h),
             outputs_stride_d=triton_scalar_specialization_rep(outputs_stride_d),
-            new_output_stride_b=triton_scalar_specialization_rep(
+            corrected_output_stride_b=triton_scalar_specialization_rep(
                 head_dim if output_head_major else outputs_stride_b
             ),
-            new_output_stride_h=triton_scalar_specialization_rep(
+            corrected_output_stride_h=triton_scalar_specialization_rep(
                 num_tokens * head_dim if output_head_major else outputs_stride_h
             ),
-            new_output_stride_d=1,
+            corrected_output_stride_d=1,
             lses_stride_n=triton_scalar_specialization_rep(lses_stride_n),
             lses_stride_b=triton_scalar_specialization_rep(lses_stride_b),
             lses_stride_h=triton_scalar_specialization_rep(lses_stride_h),
@@ -325,13 +326,13 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
         )
         return dict(
             outputs=output_ptr,
-            new_output=TritonWarmupTensor(
+            corrected_output=TritonWarmupTensor(
                 compile_key.output_dtype,
                 shape=(1, 1, compile_key.head_dim),
                 strides=(
-                    compile_key.new_output_stride_b,
-                    compile_key.new_output_stride_h,
-                    compile_key.new_output_stride_d,
+                    compile_key.corrected_output_stride_b,
+                    compile_key.corrected_output_stride_h,
+                    compile_key.corrected_output_stride_d,
                 ),
             ),
             lses=lse_ptr,
@@ -345,7 +346,7 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
     def __call__(
         self,
         outputs: torch.Tensor,
-        new_output: torch.Tensor,
+        corrected_output: torch.Tensor,
         lses: torch.Tensor,
         vlse: torch.Tensor,
         lse_idx: int,
@@ -356,18 +357,20 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
         num_tokens, num_heads, head_dim = outputs.shape
         n_rounded = lses.shape[0]
         outputs_stride_b, outputs_stride_h, outputs_stride_d = outputs.stride()
-        new_output_stride_b, new_output_stride_h, new_output_stride_d = (
-            new_output.stride()
-        )
+        (
+            corrected_output_stride_b,
+            corrected_output_stride_h,
+            corrected_output_stride_d,
+        ) = corrected_output.stride()
         lses_stride_n, lses_stride_b, lses_stride_h = lses.stride()
         grid = (num_tokens, num_heads, 1)
         return grid, dict(
             outputs_stride_B=outputs_stride_b,
             outputs_stride_H=outputs_stride_h,
             outputs_stride_D=outputs_stride_d,
-            new_output_stride_B=new_output_stride_b,
-            new_output_stride_H=new_output_stride_h,
-            new_output_stride_D=new_output_stride_d,
+            corrected_output_stride_B=corrected_output_stride_b,
+            corrected_output_stride_H=corrected_output_stride_h,
+            corrected_output_stride_D=corrected_output_stride_d,
             lses_stride_N=lses_stride_n,
             lses_stride_B=lses_stride_b,
             lses_stride_H=lses_stride_h,
@@ -436,7 +439,8 @@ def correct_attn_out(
     )
 
     B, H, D = out.shape
-    # Write the layout consumed by reduce_scatter(dim=1), avoiding its copy.
+    # Logical shape stays [B, H, D]. Head-major strides (D, B * D, 1)
+    # make movedim(0, 1) contiguous for reduce_scatter(dim=1).
     corrected_out = (
         torch.empty_strided(
             (B, H, D), (D, B * D, 1), device=out.device, dtype=out.dtype
