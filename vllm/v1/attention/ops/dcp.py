@@ -107,6 +107,9 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
         outputs_stride_b: int
         outputs_stride_h: int
         outputs_stride_d: int
+        new_output_stride_b: int
+        new_output_stride_h: int
+        new_output_stride_d: int
         lses_stride_n: int
         lses_stride_b: int
         lses_stride_h: int
@@ -125,6 +128,9 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
         outputs_stride_B,
         outputs_stride_H,
         outputs_stride_D,
+        new_output_stride_B,
+        new_output_stride_H,
+        new_output_stride_D,
         lses_stride_N,
         lses_stride_B,
         lses_stride_H,
@@ -204,7 +210,12 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
         output = output * factor
         output = tl.where(factor == 0.0, 0.0, output)
 
-        tl.store(new_output_ptr + output_offsets, output)
+        new_output_offsets = (
+            batch_idx * new_output_stride_B
+            + head_idx * new_output_stride_H
+            + d_offsets * new_output_stride_D
+        )
+        tl.store(new_output_ptr + new_output_offsets, output)
 
     def dispatch(  # type: ignore[override]
         self,
@@ -217,6 +228,7 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
         n_rounded: int,
         lse_idx: int,
         is_base_e: bool,
+        output_head_major: bool = False,
     ) -> CompileKey:
         # Warm the contiguous [B, H, D] output and [N, B, H] LSE layouts used
         # by the production collective path. Runtime still forwards real
@@ -234,6 +246,13 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
             outputs_stride_b=triton_scalar_specialization_rep(outputs_stride_b),
             outputs_stride_h=triton_scalar_specialization_rep(outputs_stride_h),
             outputs_stride_d=triton_scalar_specialization_rep(outputs_stride_d),
+            new_output_stride_b=triton_scalar_specialization_rep(
+                head_dim if output_head_major else outputs_stride_b
+            ),
+            new_output_stride_h=triton_scalar_specialization_rep(
+                num_tokens * head_dim if output_head_major else outputs_stride_h
+            ),
+            new_output_stride_d=1,
             lses_stride_n=triton_scalar_specialization_rep(lses_stride_n),
             lses_stride_b=triton_scalar_specialization_rep(lses_stride_b),
             lses_stride_h=triton_scalar_specialization_rep(lses_stride_h),
@@ -282,6 +301,7 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
             n_rounded=dcp_world_size,
             lse_idx=WarmupIntRange(0, dcp_world_size),
             is_base_e=is_base_e,
+            output_head_major=(False, True),
         )
 
     def warmup_inputs(self, compile_key: CompileKey) -> dict[str, Any]:
@@ -305,7 +325,15 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
         )
         return dict(
             outputs=output_ptr,
-            new_output=output_ptr,
+            new_output=TritonWarmupTensor(
+                compile_key.output_dtype,
+                shape=(1, 1, compile_key.head_dim),
+                strides=(
+                    compile_key.new_output_stride_b,
+                    compile_key.new_output_stride_h,
+                    compile_key.new_output_stride_d,
+                ),
+            ),
             lses=lse_ptr,
             vlse=lse_ptr,
             lse_idx=compile_key.lse_idx,
@@ -328,12 +356,18 @@ class CorrectAttnCPOutKernel(VllmTritonJitKernel["CorrectAttnCPOutKernel.Compile
         num_tokens, num_heads, head_dim = outputs.shape
         n_rounded = lses.shape[0]
         outputs_stride_b, outputs_stride_h, outputs_stride_d = outputs.stride()
+        new_output_stride_b, new_output_stride_h, new_output_stride_d = (
+            new_output.stride()
+        )
         lses_stride_n, lses_stride_b, lses_stride_h = lses.stride()
         grid = (num_tokens, num_heads, 1)
         return grid, dict(
             outputs_stride_B=outputs_stride_b,
             outputs_stride_H=outputs_stride_h,
             outputs_stride_D=outputs_stride_d,
+            new_output_stride_B=new_output_stride_b,
+            new_output_stride_H=new_output_stride_h,
+            new_output_stride_D=new_output_stride_d,
             lses_stride_N=lses_stride_n,
             lses_stride_B=lses_stride_b,
             lses_stride_H=lses_stride_h,
@@ -368,6 +402,8 @@ def correct_attn_out(
     cp_rank: int,
     ctx: CPTritonContext,
     is_lse_base_on_e: bool = True,
+    *,
+    output_head_major: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Correct the attention output using the all-gathered lses.
 
@@ -376,6 +412,8 @@ def correct_attn_out(
         lses: Tensor of shape [ N, B, H ]
         cp_rank: Current rank in the context-parallel group
         ctx: Triton context to avoid recompilation
+        output_head_major: Store in [H, B, D] physical order for reduce-scatter.
+            Otherwise, correct the input in place.
 
     Returns:
         Tuple of (out, lse) with corrected attention and final log-sum-exp.
@@ -397,7 +435,15 @@ def correct_attn_out(
         f"got {tuple(lses.shape)}"
     )
 
-    B, H, _ = out.shape
+    B, H, D = out.shape
+    # Write the layout consumed by reduce_scatter(dim=1), avoiding its copy.
+    corrected_out = (
+        torch.empty_strided(
+            (B, H, D), (D, B * D, 1), device=out.device, dtype=out.dtype
+        )
+        if output_head_major and not out.movedim(0, 1).is_contiguous()
+        else out
+    )
 
     # Strides after we normalized shapes to 3-D views.  The kernel computes
     # offsets for `vlse_ptr` using lses_stride_B/H, so the output buffer must
@@ -412,14 +458,14 @@ def correct_attn_out(
 
     _CORRECT_ATTN_CP_OUT_KERNEL(
         out,
-        out,
+        corrected_out,
         lses,
         lse,
         cp_rank,
         ctx,
         is_base_e=is_lse_base_on_e,
     )
-    return out, lse
+    return corrected_out, lse
 
 
 def _cp_lse_common(
@@ -430,6 +476,7 @@ def _cp_lse_common(
     is_lse_base_on_e=True,
     seq_lens: torch.Tensor | None = None,
     query_start_loc: torch.Tensor | None = None,
+    output_head_major: bool = False,
 ):
     """
     cp_attn_out: [ B, H, D ]
@@ -452,6 +499,7 @@ def _cp_lse_common(
         cp_group.rank_in_group,
         ctx,
         is_lse_base_on_e=is_lse_base_on_e,
+        output_head_major=output_head_major,
     )
     return out, lse
 
@@ -478,6 +526,7 @@ def cp_lse_ag_out_rs(
         is_lse_base_on_e=is_lse_base_on_e,
         seq_lens=seq_lens,
         query_start_loc=query_start_loc,
+        output_head_major=True,
     )
     out = cp_group.reduce_scatter(out, dim=1)
 

@@ -101,6 +101,168 @@ def _distributed_run(fn, world_size: int, extra_env: dict[str, str]) -> None:
         assert process.exitcode == 0
 
 
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("shape", [(1, 8, 128), (4, 32, 512), (17, 16, 128)])
+@pytest.mark.parametrize("base_e", [False, True])
+@pytest.mark.parametrize("strided", [False, True])
+@pytest.mark.parametrize("cp_rank", [0, 3])
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_correct_attn_out_head_major(dtype, shape, base_e, strided, cp_rank):
+    """Head-major correction preserves values and needs no RS input copy."""
+    from vllm.v1.attention.ops.dcp import CPTritonContext, correct_attn_out
+
+    torch.manual_seed(0)
+    b, h, d = shape
+    source = torch.randn(b, h, d, device="cuda", dtype=dtype)
+    lses = torch.randn(4, b, h, device="cuda")
+    if strided:
+        source = source.transpose(0, 1).contiguous().transpose(0, 1)
+        lses = lses.transpose(1, 2).contiguous().transpose(1, 2)
+    # Empty shards may contain undefined outputs. All-empty and invalid LSEs
+    # must retain the current sanitization behavior in both log bases.
+    lses[cp_rank, :, 0] = -float("inf")
+    lses[:, :, 1] = -float("inf")
+    lses[1, :, 2] = float("nan")
+    lses[2, :, 3] = float("inf")
+    source[:, 0] = float("nan")
+    reference, reference_lse = correct_attn_out(
+        source.clone(), lses, cp_rank, CPTritonContext(), base_e
+    )
+    original = source.clone()
+    context = CPTritonContext()
+    actual, actual_lse = correct_attn_out(
+        source, lses, cp_rank, context, base_e, output_head_major=True
+    )
+    torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+    torch.testing.assert_close(actual_lse, reference_lse, rtol=0, atol=0)
+    if b > 1 and not strided:
+        torch.testing.assert_close(source, original, rtol=0, atol=0, equal_nan=True)
+    staged = actual.movedim(0, 1).contiguous()
+    assert staged.data_ptr() == actual.data_ptr()
+    # Replay through the cached Triton launcher, including CUDA graph capture.
+    for _ in range(2):
+        correct_attn_out(
+            original.clone(), lses, cp_rank, context, base_e, output_head_major=True
+        )
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        replayed, _ = correct_attn_out(
+            original.clone(), lses, cp_rank, context, base_e, output_head_major=True
+        )
+    graph.replay()
+    torch.testing.assert_close(replayed, reference, rtol=0, atol=0)
+
+
+def _distributed_ag_rs_layout_worker(env: dict[str, str]) -> None:
+    """Exercise the real NCCL layout consumer, including empty KV shards."""
+    from vllm.config import VllmConfig, set_current_vllm_config
+    from vllm.distributed import (
+        cleanup_dist_env_and_memory,
+        init_distributed_environment,
+        initialize_model_parallel,
+    )
+    from vllm.distributed.parallel_state import get_tp_group, set_custom_all_reduce
+    from vllm.v1.attention.ops.dcp import (
+        CPTritonContext,
+        _cp_lse_common,
+        cp_lse_ag_out_rs,
+    )
+
+    update_environment_variables(env)
+    rank, world_size = int(env["RANK"]), int(env["WORLD_SIZE"])
+    torch.cuda.set_device(rank)
+    set_custom_all_reduce(False)
+    init_distributed_environment(
+        world_size=world_size,
+        rank=rank,
+        local_rank=rank,
+        distributed_init_method=env["DISTRIBUTED_INIT_METHOD"],
+    )
+    try:
+        with set_current_vllm_config(
+            VllmConfig(parallel_config=ParallelConfig(tensor_parallel_size=world_size))
+        ):
+            initialize_model_parallel(tensor_model_parallel_size=world_size)
+        group = get_tp_group()
+        for dtype in (torch.float16, torch.bfloat16):
+            for b, h, d in ((1, 32, 128), (4, 32, 512), (17, 64, 512)):
+                for base_e in (False, True):
+                    torch.manual_seed(123 + rank)
+                    source = torch.randn(b, h, d, device="cuda", dtype=dtype)
+                    local_lse = torch.randn(b, h, device="cuda")
+                    lens = torch.tensor(
+                        [0 if rank == 0 else 8192], device="cuda", dtype=torch.int32
+                    )
+                    starts = torch.tensor([0, b], device="cuda", dtype=torch.int32)
+                    if rank == 0:
+                        source.fill_(float("nan"))
+                    kwargs = dict(
+                        is_lse_base_on_e=base_e,
+                        seq_lens=lens,
+                        query_start_loc=starts,
+                    )
+                    old_out, old_lse = _cp_lse_common(
+                        source.clone(),
+                        local_lse.clone(),
+                        group,
+                        ctx=CPTritonContext(),
+                        **kwargs,
+                    )
+                    expected = group.reduce_scatter(old_out, dim=1)
+                    context = CPTritonContext()
+                    actual, actual_lse = cp_lse_ag_out_rs(
+                        source.clone(),
+                        local_lse.clone(),
+                        group,
+                        ctx=context,
+                        return_lse=True,
+                        **kwargs,
+                    )
+                    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                    heads = h // world_size
+                    torch.testing.assert_close(
+                        actual_lse,
+                        old_lse[:, rank * heads : (rank + 1) * heads],
+                        rtol=0,
+                        atol=0,
+                    )
+                    # Restore inputs because the B=1 path remains in place.
+                    work, work_lse = source.clone(), local_lse.clone()
+                    for _ in range(3):
+                        work.copy_(source)
+                        work_lse.copy_(local_lse)
+                        cp_lse_ag_out_rs(work, work_lse, group, ctx=context, **kwargs)
+                    torch.cuda.synchronize()
+                    graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.graph(graph):
+                        work.copy_(source)
+                        work_lse.copy_(local_lse)
+                        replayed = cp_lse_ag_out_rs(
+                            work, work_lse, group, ctx=context, **kwargs
+                        )
+                    for _ in range(2):
+                        graph.replay()
+                        torch.testing.assert_close(replayed, expected, rtol=0, atol=0)
+                    # Release graph-owned NCCL resources before group teardown.
+                    del graph
+    finally:
+        torch.cuda.synchronize()
+        dist.barrier()
+        cleanup_dist_env_and_memory()
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 4, reason="Need at least 4 GPUs.")
+def test_distributed_ag_rs_layout_matches_reference():
+    _distributed_run(
+        _distributed_ag_rs_layout_worker,
+        world_size=4,
+        extra_env={
+            "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
+            "VLLM_ALLREDUCE_USE_FLASHINFER": "0",
+        },
+    )
+
+
 class TestDCPCommBackendConfig:
     """Test --dcp-comm-backend config validation."""
 
