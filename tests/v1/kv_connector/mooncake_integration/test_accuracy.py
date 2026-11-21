@@ -40,6 +40,24 @@ def run_simple_prompt():
     print("-" * 50)
 
 
+def test_min_tokens_survives_prefill():
+    # Prefer a stop token as soon as the minimum allows it. Decode should
+    # produce four tokens before the stop token, even though P generates one.
+    with openai.OpenAI(api_key="EMPTY", base_url=BASE_URL, max_retries=0) as client:
+        completion = client.completions.create(
+            model=MODEL_NAME,
+            prompt=SIMPLE_PROMPT * 8,
+            temperature=0,
+            max_tokens=8,
+            logit_bias={"42": 100},
+            extra_body={"min_tokens": 4, "stop_token_ids": [42]},
+            timeout=30,
+        )
+
+    assert completion.choices[0].finish_reason == "stop"
+    assert completion.usage.completion_tokens == 5
+
+
 def sleep_and_wake_up(urls: list[str]):
     for url in urls:
         requests.post(f"{url}/sleep", params={"level": 1}).raise_for_status()

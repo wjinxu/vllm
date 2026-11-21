@@ -37,6 +37,8 @@ python examples/disaggregated/mooncake_connector/mooncake_connector_proxy.py --p
 ```
 
 Now you can send requests to the proxy server through port 8000.
+The prefiller generates one token to prepare the KV cache. The decoder
+applies the request's original `min_tokens` and output limit.
 
 For multimodal Encode-Prefill-Decode (encoder embeddings rather than KV
 cache), see [ECMooncakeConnector Usage Guide](mooncake_ec_connector_usage.md).

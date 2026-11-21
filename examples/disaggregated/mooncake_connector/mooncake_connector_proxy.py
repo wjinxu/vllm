@@ -259,6 +259,9 @@ async def send_request_to_service(
     }
     req_data["stream"] = False
     req_data["max_tokens"] = 1
+    if req_data.get("min_tokens"):
+        # Keep stop tokens masked for P's single token.
+        req_data["min_tokens"] = 1
     if "max_completion_tokens" in req_data:
         req_data["max_completion_tokens"] = 1
     if "stream_options" in req_data:

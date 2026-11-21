@@ -18,6 +18,7 @@ steps:
   source_file_dependencies:
     - vllm/distributed/kv_transfer/kv_connector/v1/mooncake/
     - tests/v1/kv_connector/mooncake_integration/
+    - examples/disaggregated/mooncake_connector/mooncake_connector_proxy.py
   commands:
     - bash /vllm-workspace/.buildkite/scripts/check-kv-connectors.sh
     - bash v1/kv_connector/mooncake_integration/config_sweep_accuracy_test.sh
